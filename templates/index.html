@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Raceline Studio</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+  #map-canvas { cursor: crosshair; image-rendering: pixelated; }
+  .param-slider { -webkit-appearance: none; height: 4px; background: #334155; border-radius: 2px; outline: none; }
+  .param-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #3b82f6; cursor: pointer; }
+  .btn { padding: 6px 14px; border-radius: 6px; font-size: 0.8rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; }
+  .btn-primary { background: #3b82f6; color: white; } .btn-primary:hover { background: #2563eb; }
+  .btn-secondary { background: #334155; color: #e2e8f0; } .btn-secondary:hover { background: #475569; }
+  .btn-sm { padding: 3px 10px; font-size: 0.7rem; }
+  .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: 8px;
+    background: #1e293b; border: 1px solid #334155; font-size: 0.85rem; z-index: 100;
+    opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  .folder-toggle { cursor: pointer; user-select: none; }
+  .folder-toggle:hover { color: #93c5fd; }
+  .folder-children { overflow: hidden; }
+  .csv-item { cursor: pointer; padding: 3px 6px 3px 16px; border-radius: 4px; font-size: 0.7rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .csv-item:hover { background: #1e293b; }
+  /* Modal overlay */
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50; display: none; align-items: center; justify-content: center; }
+  .modal-bg.open { display: flex; }
+  .modal { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 24px; width: 480px; max-height: 80vh; overflow-y: auto; }
+  /* Speed gradient helpers */
+  .speed-legend { display: flex; height: 10px; border-radius: 3px; overflow: hidden; }
+  .speed-legend div { flex: 1; }
+</style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+
+<!-- Header -->
+<header class="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-700 shrink-0">
+  <div class="flex items-center gap-3">
+    <h1 class="text-lg font-bold text-blue-400">Raceline Studio</h1>
+    <span class="text-xs text-slate-500">F1Tenth Race Planner</span>
+  </div>
+  <div class="flex items-center gap-3">
+    <select id="map-select" class="bg-slate-800 text-sm rounded px-2 py-1 border border-slate-600" onchange="loadMap(this.value)">
+      <option value="">Select map...</option>
+    </select>
+    <button class="btn btn-secondary btn-sm" onclick="openOptimizeModal()">Optimize</button>
+    <button class="btn btn-secondary btn-sm" onclick="extractCenterline()">Extract Centerline</button>
+    <button class="btn btn-secondary btn-sm" onclick="reverseActive()">Reverse Dir</button>
+  </div>
+</header>
+
+<!-- Main layout -->
+<div class="flex flex-1 overflow-hidden">
+
+  <!-- Left: File Browser -->
+  <div class="w-52 shrink-0 bg-slate-900 border-r border-slate-700 flex flex-col overflow-hidden">
+    <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-700">
+      Waypoints
+    </div>
+    <div class="flex-1 overflow-y-auto p-1" id="csv-list"></div>
+  </div>
+
+  <!-- Center -->
+  <div class="flex-1 flex flex-col overflow-hidden">
+    <!-- Raceline Slots -->
+    <div class="flex items-center gap-2 px-3 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
+      <span class="text-xs text-slate-400 mr-1">Slots:</span>
+      <div id="slot-bar" class="flex gap-2"></div>
+      <div class="ml-auto flex gap-1 items-center">
+        <button class="btn btn-secondary btn-sm" onclick="undo()" title="Undo (Ctrl+Z)">&#8592; Undo</button>
+        <button class="btn btn-secondary btn-sm" onclick="redo()" title="Redo (Ctrl+Y)">Redo &#8594;</button>
+        <span class="text-slate-600 mx-1">|</span>
+        <button class="btn btn-secondary btn-sm" onclick="generateOffset(getOffset())">+ Pass Left</button>
+        <button class="btn btn-secondary btn-sm" onclick="generateOffset(-getOffset())">+ Pass Right</button>
+        <label class="flex items-center gap-1 text-xs text-slate-400 ml-2">
+          <input type="checkbox" id="edit-mode" onchange="toggleEditMode()" class="rounded" checked>
+          Edit pts
+        </label>
+      </div>
+    </div>
+    <!-- Map -->
+    <div class="flex-1 relative overflow-hidden bg-slate-950" id="map-container">
+      <canvas id="map-canvas" class="absolute inset-0"></canvas>
+      <div id="map-info" class="absolute bottom-2 left-2 text-xs text-slate-500 bg-slate-900/80 px-2 py-1 rounded"></div>
+      <!-- Speed legend + inflation toggle -->
+      <div class="absolute top-2 right-2 bg-slate-900/80 rounded p-2 text-xs space-y-2">
+        <div>
+          <div class="flex justify-between text-slate-400 mb-1"><span>slow</span><span>fast</span></div>
+          <div class="speed-legend w-32">
+            <div style="background:#dc2626"></div><div style="background:#f59e0b"></div>
+            <div style="background:#eab308"></div><div style="background:#22c55e"></div>
+            <div style="background:#06b6d4"></div>
+          </div>
+        </div>
+        <div class="border-t border-slate-700 pt-2 space-y-1">
+          <label class="flex items-center gap-2 text-slate-300">
+            <input type="checkbox" id="show-inflation" onchange="toggleInflation()" class="rounded" checked> Show inflation
+          </label>
+          <div class="flex items-center gap-1">
+            <span class="text-slate-500">width:</span>
+            <input type="range" class="param-slider w-20" id="infl_width" min="0.10" max="0.50" step="0.02" value="0.30"
+                   oninput="document.getElementById('infl_width_val').textContent=parseFloat(this.value).toFixed(2)">
+            <span id="infl_width_val" class="text-blue-400 w-8">0.30</span>
+          </div>
+          <button class="btn btn-secondary btn-sm w-full" onclick="refreshInflation()">Refresh</button>
+        </div>
+      </div>
+    </div>
+    <!-- Speed Profile Chart -->
+    <div class="h-36 shrink-0 bg-slate-900 border-t border-slate-700 p-2">
+      <canvas id="speed-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Right: Parameters -->
+  <div class="w-56 shrink-0 bg-slate-900 border-l border-slate-700 flex flex-col overflow-y-auto">
+    <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-700">
+      Speed Profile
+    </div>
+    <div class="p-3 space-y-3">
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>v_max (m/s)</span><span id="v_max_val" class="text-blue-400">7.60</span></label>
+        <input type="range" class="param-slider w-full" id="v_max" min="2" max="12" step="0.1" value="7.6" oninput="paramChanged(this)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>v_min (m/s)</span><span id="v_min_val" class="text-blue-400">1.5</span></label>
+        <input type="range" class="param-slider w-full" id="v_min" min="0.5" max="4.0" step="0.1" value="1.5" oninput="paramChanged(this)">
+        <p class="text-xs text-slate-600">Hardware floor (motor/stability)</p>
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>a_max (m/s²)</span><span id="a_max_val" class="text-blue-400">5.0</span></label>
+        <input type="range" class="param-slider w-full" id="a_max" min="1" max="12" step="0.1" value="5.0" oninput="paramChanged(this)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>a_brake (m/s²)</span><span id="a_brake_val" class="text-blue-400">8.0</span></label>
+        <input type="range" class="param-slider w-full" id="a_brake" min="2" max="15" step="0.1" value="8.0" oninput="paramChanged(this)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>friction (mu)</span><span id="mu_val" class="text-blue-400">0.41</span></label>
+        <input type="range" class="param-slider w-full" id="mu" min="0.1" max="1.0" step="0.01" value="0.41" oninput="paramChanged(this)">
+      </div>
+      <button class="btn btn-primary w-full" onclick="reprofile()">Re-profile Speed</button>
+      <div id="laptime-display" class="text-center text-sm text-slate-400"></div>
+      <div id="speed-stats" class="text-xs text-slate-500 text-center space-y-0.5"></div>
+      <!-- <p class="text-xs text-slate-600 text-center">yaml: slow_speed=v_min, fast_speed=v_max</p> -->
+    </div>
+
+    <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-t border-slate-700">
+      Resample
+    </div>
+    <div class="p-3 space-y-2">
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Num points</span><span id="rs_npts_val" class="text-blue-400">45</span></label>
+        <input type="range" class="param-slider w-full" id="rs_npts" min="20" max="200" step="5" value="45"
+               oninput="document.getElementById('rs_npts_val').textContent=this.value">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Turn bias</span><span id="rs_turnbias_val" class="text-blue-400">8.0</span></label>
+        <input type="range" class="param-slider w-full" id="rs_turnbias" min="1.0" max="40.0" step="0.5" value="8.0"
+               oninput="document.getElementById('rs_turnbias_val').textContent=parseFloat(this.value).toFixed(1)">
+      </div>
+      <button class="btn btn-secondary w-full" onclick="resampleActive()">Resample Points</button>
+      <p class="text-xs text-slate-500">Denser in turns, sparser on straights</p>
+    </div>
+
+    <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-t border-slate-700">
+      Offset
+    </div>
+    <div class="p-3 space-y-2">
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Offset (m)</span><span id="offset_val" class="text-blue-400">0.40</span></label>
+        <input type="range" class="param-slider w-full" id="offset" min="0.05" max="1.5" step="0.05" value="0.40"
+               oninput="document.getElementById('offset_val').textContent=parseFloat(this.value).toFixed(2)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Car width (m)</span><span id="car_hw_val" class="text-blue-400">0.21</span></label>
+        <input type="range" class="param-slider w-full" id="car_hw" min="0.05" max="0.40" step="0.01" value="0.21"
+               oninput="document.getElementById('car_hw_val').textContent=parseFloat(this.value).toFixed(2)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Wall clearance (m)</span><span id="wall_clear_val" class="text-blue-400">0.10</span></label>
+        <input type="range" class="param-slider w-full" id="wall_clear" min="0.00" max="0.40" step="0.01" value="0.10"
+               oninput="document.getElementById('wall_clear_val').textContent=parseFloat(this.value).toFixed(2)">
+      </div>
+      <div class="flex gap-1">
+        <button class="btn btn-secondary btn-sm flex-1" onclick="generateOffset(getOffset())">Left</button>
+        <button class="btn btn-secondary btn-sm flex-1" onclick="generateOffset(-getOffset())">Right</button>
+      </div>
+      <p class="text-xs text-slate-500">Total margin = car width + wall clearance</p>
+    </div>
+
+    <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-t border-slate-700">
+      Save
+    </div>
+    <div class="p-3 space-y-3">
+      <div class="space-y-2">
+        <p class="text-xs text-slate-400 font-semibold">Pure Pursuit (4-col)</p>
+        <input type="text" id="pp-name" class="w-full bg-slate-800 text-sm rounded px-2 py-1 border border-slate-600" placeholder="filename.csv (for Save As New)">
+        <div class="flex gap-2">
+          <button class="btn btn-primary flex-1" onclick="savePP(false)">Overwrite</button>
+          <button class="btn btn-secondary flex-1" onclick="savePP(true)">Save As New</button>
+        </div>
+      </div>
+      <div class="border-t border-slate-700 pt-3 space-y-2">
+        <p class="text-xs text-slate-400 font-semibold">MPPI (Levine 9-col)</p>
+        <input type="text" id="mppi-name" class="w-full bg-slate-800 text-sm rounded px-2 py-1 border border-slate-600" placeholder="filename.csv (for Save As New)">
+        <div class="flex gap-2">
+          <button class="btn btn-primary flex-1" onclick="saveMppi(false)">Overwrite</button>
+          <button class="btn btn-secondary flex-1" onclick="saveMppi(true)">Save As New</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Optimize Modal -->
+<div class="modal-bg" id="optimize-modal">
+  <div class="modal">
+    <h2 class="text-lg font-bold text-blue-400 mb-4">Optimize Raceline</h2>
+    <p class="text-xs text-slate-400 mb-3">Runs min-curvature optimization on the active slot's waypoints using the selected map. Requires a loaded map.</p>
+    <div class="space-y-3">
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Margin (m)</span><span id="opt_margin_val" class="text-blue-400">0.10</span></label>
+        <input type="range" class="param-slider w-full" id="opt_margin" min="0.05" max="0.50" step="0.01" value="0.10"
+               oninput="document.getElementById('opt_margin_val').textContent=parseFloat(this.value).toFixed(2)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Car width (m)</span><span id="opt_carwidth_val" class="text-blue-400">0.21</span></label>
+        <input type="range" class="param-slider w-full" id="opt_carwidth" min="0.15" max="0.50" step="0.01" value="0.21"
+               oninput="document.getElementById('opt_carwidth_val').textContent=parseFloat(this.value).toFixed(2)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Num points</span><span id="opt_npts_val" class="text-blue-400">50</span></label>
+        <input type="range" class="param-slider w-full" id="opt_npts" min="30" max="200" step="5" value="50"
+               oninput="document.getElementById('opt_npts_val').textContent=this.value">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Friction (mu)</span><span id="opt_mu_val" class="text-blue-400">0.41</span></label>
+        <input type="range" class="param-slider w-full" id="opt_mu" min="0.1" max="1.0" step="0.01" value="0.41"
+               oninput="document.getElementById('opt_mu_val').textContent=parseFloat(this.value).toFixed(2)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>v_max (m/s)</span><span id="opt_vmax_val" class="text-blue-400">7.6</span></label>
+        <input type="range" class="param-slider w-full" id="opt_vmax" min="1" max="12" step="0.1" value="7.6"
+               oninput="document.getElementById('opt_vmax_val').textContent=parseFloat(this.value).toFixed(1)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>a_max (m/s²)</span><span id="opt_amax_val" class="text-blue-400">5.0</span></label>
+        <input type="range" class="param-slider w-full" id="opt_amax" min="1" max="12" step="0.1" value="5.0"
+               oninput="document.getElementById('opt_amax_val').textContent=parseFloat(this.value).toFixed(1)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>a_brake (m/s²)</span><span id="opt_abrake_val" class="text-blue-400">8.0</span></label>
+        <input type="range" class="param-slider w-full" id="opt_abrake" min="2" max="15" step="0.1" value="8.0"
+               oninput="document.getElementById('opt_abrake_val').textContent=parseFloat(this.value).toFixed(1)">
+      </div>
+      <div class="space-y-1">
+        <label class="flex justify-between text-xs"><span>Turn bias</span><span id="opt_turnbias_val" class="text-blue-400">8.0</span></label>
+        <input type="range" class="param-slider w-full" id="opt_turnbias" min="1.0" max="40.0" step="0.5" value="8.0"
+               oninput="document.getElementById('opt_turnbias_val').textContent=parseFloat(this.value).toFixed(1)">
+        <p class="text-xs text-slate-500">1.0 = uniform, higher = more points in turns</p>
+      </div>
+      <label class="flex items-center gap-2 text-xs text-slate-300">
+        <input type="checkbox" id="opt_show_inflation" checked class="rounded"> Show inflation zone on map
+      </label>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-primary flex-1" onclick="runOptimize()">Run Optimization</button>
+      <button class="btn btn-secondary flex-1" onclick="closeOptimizeModal()">Cancel</button>
+    </div>
+    <div id="opt-status" class="text-xs text-slate-400 mt-2 text-center"></div>
+  </div>
+</div>
+
+<!-- Waypoint hover tooltip -->
+<div id="wp-tooltip" class="absolute bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs pointer-events-none"
+     style="display:none; z-index:40; line-height:1.35;"></div>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<script>
+// ── Constants & State ────────────────────────────────────────────────────
+const SLOT_COLORS = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444'];
+const SLOT_NAMES  = ['Primary', 'Pass Left', 'Pass Right', 'Fallback'];
+let slots = [null, null, null, null];
+let activeSlot = 0;
+let mapInfo = null, mapImg = null;
+let pan = {x:0, y:0}, zoom = 1;
+let speedChart = null;
+let editMode = true, dragIdx = -1;
+let inflationData = null;
+
+// Undo/redo: stores deep copies of slot data per active slot
+const MAX_HISTORY = 15;
+let undoStack = [[], [], [], []];  // per slot
+let redoStack = [[], [], [], []];
+
+function pushUndo(slotIdx) {
+  if (!slots[slotIdx]) return;
+  undoStack[slotIdx].push(JSON.parse(JSON.stringify(slots[slotIdx].data)));
+  if (undoStack[slotIdx].length > MAX_HISTORY) undoStack[slotIdx].shift();
+  redoStack[slotIdx] = []; // clear redo on new action
+}
+function undo() {
+  const i = activeSlot;
+  if (!undoStack[i].length || !slots[i]) { toast('Nothing to undo', 'warn'); return; }
+  redoStack[i].push(JSON.parse(JSON.stringify(slots[i].data)));
+  slots[i].data = undoStack[i].pop();
+  drawMap(); updateSpeedChart(); toast('Undo');
+}
+function redo() {
+  const i = activeSlot;
+  if (!redoStack[i].length || !slots[i]) { toast('Nothing to redo', 'warn'); return; }
+  undoStack[i].push(JSON.parse(JSON.stringify(slots[i].data)));
+  slots[i].data = redoStack[i].pop();
+  drawMap(); updateSpeedChart(); toast('Redo');
+}
+// Ctrl+Z / Ctrl+Y keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
+  if (e.ctrlKey && e.key === 'y') { e.preventDefault(); redo(); }
+});
+
+// Speed → color
+function speedColor(ratio) {
+  const r = ratio < 0.5 ? 1.0 : 1.0 - (ratio - 0.5) * 2;
+  const g = ratio < 0.5 ? ratio * 2 : 1.0;
+  const b = ratio > 0.7 ? (ratio - 0.7) / 0.3 : 0;
+  return `rgb(${Math.round(r*220)},${Math.round(g*220)},${Math.round(b*180)})`;
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────
+async function init() {
+  await loadMapList();
+  await loadCsvList();
+  renderSlotBar();
+  initSpeedChart();
+  initMapControls();
+  resizeCanvas();
+  window.addEventListener('resize', () => { resizeCanvas(); drawMap(); });
+}
+
+async function loadMapList() {
+  const maps = await api('/api/maps');
+  const sel = document.getElementById('map-select');
+  maps.forEach((m, i) => { const o = document.createElement('option'); o.value = i; o.textContent = m.name; sel.appendChild(o); });
+  window._maps = maps;
+  if (maps.length) { sel.value = 0; loadMap(0); }
+}
+
+async function loadMap(idx) {
+  if (idx === '' || !window._maps) return;
+  mapInfo = window._maps[idx];
+  mapImg = new Image();
+  mapImg.onload = () => { fitMap(); drawMap(); if (showInflation) refreshInflation(); };
+  mapImg.src = `/api/map-image?path=${encodeURIComponent(mapInfo.image)}`;
+}
+
+async function loadCsvList() {
+  const csvs = await api('/api/csvs');
+  const el = document.getElementById('csv-list');
+  // Build folder tree
+  const tree = {};
+  csvs.forEach(c => {
+    const parts = c.split('/');
+    let node = tree;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!node[parts[i]]) node[parts[i]] = {};
+      node = node[parts[i]];
+    }
+    if (!node._files) node._files = [];
+    node._files.push(c);
+  });
+  el.innerHTML = '';
+  renderFolderTree(tree, el, 0);
+}
+
+function renderFolderTree(node, parent, depth) {
+  // Render folders first
+  Object.keys(node).sort().forEach(key => {
+    if (key === '_files') return;
+    const folder = document.createElement('div');
+    const toggle = document.createElement('div');
+    toggle.className = 'folder-toggle flex items-center gap-1 px-1 py-1 text-xs text-slate-400';
+    toggle.style.paddingLeft = (depth * 12 + 4) + 'px';
+    toggle.innerHTML = `<span class="arrow">&#9654;</span> <span class="font-medium">${key}</span>`;
+    const children = document.createElement('div');
+    children.className = 'folder-children';
+    children.style.display = 'none';
+    toggle.onclick = () => {
+      const open = children.style.display !== 'none';
+      children.style.display = open ? 'none' : 'block';
+      toggle.querySelector('.arrow').innerHTML = open ? '&#9654;' : '&#9660;';
+    };
+    folder.appendChild(toggle);
+    folder.appendChild(children);
+    parent.appendChild(folder);
+    renderFolderTree(node[key], children, depth + 1);
+  });
+  // Render files
+  if (node._files) {
+    node._files.forEach(f => {
+      const item = document.createElement('div');
+      item.className = 'csv-item text-slate-300';
+      item.style.paddingLeft = (depth * 12 + 16) + 'px';
+      item.textContent = f.split('/').pop();
+      item.title = f;
+      item.onclick = () => loadCsvToSlot(f, activeSlot);
+      parent.appendChild(item);
+    });
+  }
+}
+
+// ── Slots ────────────────────────────────────────────────────────────────
+function renderSlotBar() {
+  const bar = document.getElementById('slot-bar');
+  bar.innerHTML = '';
+  slots.forEach((s, i) => {
+    const b = document.createElement('button');
+    b.className = 'px-3 py-1 rounded text-xs font-medium border-2';
+    b.style.background = s ? SLOT_COLORS[i] + '25' : '#1e293b';
+    b.style.color = s ? SLOT_COLORS[i] : '#64748b';
+    b.style.borderColor = i === activeSlot ? SLOT_COLORS[i] : 'transparent';
+    const lapStr = s && s.lap_time != null ? ` <span class="text-slate-400">${s.lap_time.toFixed(2)}s</span>` : '';
+    b.innerHTML = `<b>${i+1}</b> ${s ? s.name : SLOT_NAMES[i]}${lapStr}`;
+    b.onclick = () => {
+      activeSlot = i;
+      renderSlotBar(); updateSpeedChart(); drawMap();
+      const cur = slots[i];
+      document.getElementById('laptime-display').textContent =
+        (cur && cur.lap_time != null) ? `Est. lap: ${cur.lap_time.toFixed(3)}s` : '';
+    };
+    b.oncontextmenu = (e) => { e.preventDefault(); slots[i] = null; renderSlotBar(); drawMap(); updateSpeedChart(); };
+    bar.appendChild(b);
+  });
+}
+
+async function computeLapTime(slotIdx) {
+  const s = slots[slotIdx];
+  if (!s || !s.data || !s.data.length) return;
+  const vmax = parseFloat(document.getElementById('v_max').value);
+  const vmin = parseFloat(document.getElementById('v_min').value);
+  const lt = await api('/api/estimate-laptime', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({waypoints: s.data, v_min: vmin, v_max: vmax}) });
+  if (lt.lap_time != null) {
+    s.lap_time = lt.lap_time;
+    renderSlotBar();
+    if (slotIdx === activeSlot) {
+      document.getElementById('laptime-display').textContent = `Est. lap: ${lt.lap_time.toFixed(3)}s`;
+    }
+  }
+}
+
+async function loadCsvToSlot(csvPath, idx) {
+  const data = await api(`/api/csv?path=${encodeURIComponent(csvPath)}`);
+  if (data.error) { toast(data.error, 'error'); return; }
+  slots[idx] = { name: csvPath.split('/').pop().replace('.csv',''), data, csvPath };
+  activeSlot = idx;
+  renderSlotBar(); drawMap(); updateSpeedChart();
+  computeLapTime(idx);
+  toast(`Loaded → Slot ${idx+1}`);
+}
+
+// ── Map Drawing ──────────────────────────────────────────────────────────
+function resizeCanvas() {
+  const c = document.getElementById('map-container'), cv = document.getElementById('map-canvas');
+  cv.width = c.clientWidth; cv.height = c.clientHeight;
+}
+function fitMap() {
+  if (!mapImg || !mapInfo) return;
+  resizeCanvas();
+  const cv = document.getElementById('map-canvas');
+  zoom = Math.min(cv.width / mapImg.width, cv.height / mapImg.height) * 0.85;
+  pan.x = (cv.width - mapImg.width * zoom) / 2;
+  pan.y = (cv.height - mapImg.height * zoom) / 2;
+}
+function w2c(wx, wy) {
+  if (!mapInfo) return [0,0];
+  const px = (wx - mapInfo.origin[0]) / mapInfo.resolution;
+  const py = mapImg.height - (wy - mapInfo.origin[1]) / mapInfo.resolution;
+  return [px * zoom + pan.x, py * zoom + pan.y];
+}
+function c2w(cx, cy) {
+  if (!mapInfo || !mapImg) return [0,0];
+  const px = (cx - pan.x) / zoom;
+  const py = (cy - pan.y) / zoom;
+  const wx = px * mapInfo.resolution + mapInfo.origin[0];
+  const wy = (mapImg.height - py) * mapInfo.resolution + mapInfo.origin[1];
+  return [wx, wy];
+}
+
+function drawMap() {
+  const cv = document.getElementById('map-canvas'), ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (mapImg && mapImg.complete) ctx.drawImage(mapImg, pan.x, pan.y, mapImg.width*zoom, mapImg.height*zoom);
+
+  // Draw inflation overlay
+  if (inflationData && showInflation && Array.isArray(inflationData)) {
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.40)';
+    const s = Math.max(2, zoom * (mapInfo?.resolution || 0.05) * 15);
+    inflationData.forEach(([wx,wy]) => {
+      const [cx, cy] = w2c(wx, wy);
+      ctx.fillRect(cx - s/2, cy - s/2, s, s);
+    });
+  }
+
+  // Draw racelines with speed coloring
+  slots.forEach((s, i) => {
+    if (!s || !s.data.length) return;
+    const isActive = i === activeSlot;
+    ctx.lineWidth = isActive ? 3 : 1.5;
+    ctx.globalAlpha = isActive ? 1.0 : 0.4;
+
+    // Draw speed-colored segments
+    for (let j = 0; j < s.data.length; j++) {
+      const j2 = (j + 1) % s.data.length;
+      const [x1,y1] = w2c(s.data[j][0], s.data[j][1]);
+      const [x2,y2] = w2c(s.data[j2][0], s.data[j2][1]);
+      const ratio = s.data[j][3];
+      ctx.strokeStyle = isActive ? speedColor(ratio) : SLOT_COLORS[i];
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1.0;
+
+    // Draw waypoint dots in edit mode
+    if (editMode && isActive) {
+      s.data.forEach((wp, j) => {
+        const [cx, cy] = w2c(wp[0], wp[1]);
+        ctx.fillStyle = speedColor(wp[3]);
+        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI*2); ctx.stroke();
+      });
+    }
+  });
+
+  const info = document.getElementById('map-info');
+  const a = slots[activeSlot];
+  info.textContent = a ? `Slot ${activeSlot+1}: ${a.name} (${a.data.length} pts)` : 'Click a CSV to load';
+}
+
+// ── Map Controls (pan/zoom/edit) ─────────────────────────────────────────
+function initMapControls() {
+  const cv = document.getElementById('map-canvas');
+  let dragging = false, lastX, lastY;
+
+  cv.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = cv.getBoundingClientRect(), mx = e.clientX-r.left, my = e.clientY-r.top;
+    const f = e.deltaY < 0 ? 1.15 : 1/1.15;
+    pan.x = mx - (mx-pan.x)*f; pan.y = my - (my-pan.y)*f; zoom *= f;
+    drawMap();
+  });
+
+  cv.addEventListener('mousedown', e => {
+    if (editMode && e.button === 0 && slots[activeSlot]) {
+      // Find nearest waypoint
+      const r = cv.getBoundingClientRect();
+      const mx = e.clientX-r.left, my = e.clientY-r.top;
+      const s = slots[activeSlot];
+      let minD = Infinity, minI = -1;
+      s.data.forEach((wp, i) => {
+        const [cx, cy] = w2c(wp[0], wp[1]);
+        const d = Math.hypot(cx-mx, cy-my);
+        if (d < minD) { minD = d; minI = i; }
+      });
+      if (minD < 20) { pushUndo(activeSlot); dragIdx = minI; return; }
+    }
+    if (editMode && e.button === 0 && e.shiftKey && slots[activeSlot]) {
+      // Insert new waypoint
+      const r = cv.getBoundingClientRect();
+      const [wx, wy] = c2w(e.clientX-r.left, e.clientY-r.top);
+      const s = slots[activeSlot];
+      // Find nearest segment
+      let minD = Infinity, insertAt = s.data.length;
+      for (let i = 0; i < s.data.length; i++) {
+        const i2 = (i+1) % s.data.length;
+        const midX = (s.data[i][0]+s.data[i2][0])/2, midY = (s.data[i][1]+s.data[i2][1])/2;
+        const d = Math.hypot(midX-wx, midY-wy);
+        if (d < minD) { minD = d; insertAt = i+1; }
+      }
+      pushUndo(activeSlot);
+      s.data.splice(insertAt, 0, [wx, wy, 0, 0.5]);
+      drawMap(); updateSpeedChart();
+      return;
+    }
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    cv.style.cursor = 'grabbing';
+  });
+
+  cv.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    if (!editMode || !slots[activeSlot]) return;
+    const r = cv.getBoundingClientRect(), mx = e.clientX-r.left, my = e.clientY-r.top;
+    const s = slots[activeSlot];
+    let minD = Infinity, minI = -1;
+    s.data.forEach((wp, i) => {
+      const [cx, cy] = w2c(wp[0], wp[1]);
+      const d = Math.hypot(cx-mx, cy-my);
+      if (d < minD) { minD = d; minI = i; }
+    });
+    if (minD < 20 && s.data.length > 3) {
+      pushUndo(activeSlot);
+      s.data.splice(minI, 1);
+      drawMap(); updateSpeedChart();
+    }
+  });
+
+  cv.addEventListener('mousemove', e => {
+    if (dragIdx >= 0 && editMode && slots[activeSlot]) {
+      const r = cv.getBoundingClientRect();
+      const [wx, wy] = c2w(e.clientX-r.left, e.clientY-r.top);
+      slots[activeSlot].data[dragIdx][0] = wx;
+      slots[activeSlot].data[dragIdx][1] = wy;
+      drawMap();
+      return;
+    }
+    if (dragging) {
+      pan.x += e.clientX-lastX; pan.y += e.clientY-lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      drawMap();
+      hideTooltip();
+      return;
+    }
+    // Hover tooltip — only when not dragging/panning
+    updateHoverTooltip(e);
+  });
+
+  cv.addEventListener('mouseup', () => {
+    const wasDragEdit = dragIdx >= 0;
+    dragging = false; dragIdx = -1;
+    cv.style.cursor = editMode ? 'default' : 'crosshair';
+    if (wasDragEdit) {
+      updateSpeedChart();
+      computeLapTime(activeSlot);  // recalc lap time after edit
+    }
+  });
+  cv.addEventListener('mouseleave', () => { dragging = false; dragIdx = -1; hideTooltip(); });
+}
+
+function hideTooltip() { document.getElementById('wp-tooltip').style.display = 'none'; }
+
+function updateHoverTooltip(e) {
+  const s = slots[activeSlot];
+  if (!s || !s.data.length) { hideTooltip(); return; }
+  const cv = document.getElementById('map-canvas');
+  const r = cv.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  // Find nearest waypoint in canvas space
+  let minD = Infinity, minI = -1;
+  s.data.forEach((wp, i) => {
+    const [cx, cy] = w2c(wp[0], wp[1]);
+    const d = Math.hypot(cx - mx, cy - my);
+    if (d < minD) { minD = d; minI = i; }
+  });
+  const tooltip = document.getElementById('wp-tooltip');
+  if (minD < 15 && minI >= 0) {
+    const wp = s.data[minI];
+    const vmax = parseFloat(document.getElementById('v_max').value);
+    const vmin = parseFloat(document.getElementById('v_min').value);
+    const actual = vmin + wp[3] * (vmax - vmin);
+    tooltip.innerHTML = `
+      <div class="text-slate-300">idx <b>${minI}</b> / ${s.data.length}</div>
+      <div>ratio: <span class="text-blue-400">${wp[3].toFixed(3)}</span></div>
+      <div>speed: <span class="text-green-400">${actual.toFixed(2)} m/s</span></div>
+    `;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 12) + 'px';
+    tooltip.style.top = (e.clientY + 12) + 'px';
+  } else {
+    hideTooltip();
+  }
+}
+
+function toggleEditMode() {
+  editMode = document.getElementById('edit-mode').checked;
+  document.getElementById('map-canvas').style.cursor = editMode ? 'default' : 'crosshair';
+  drawMap();
+}
+
+// ── Speed Chart ──────────────────────────────────────────────────────────
+function initSpeedChart() {
+  speedChart = new Chart(document.getElementById('speed-chart').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: true, labels: { color: '#94a3b8', boxWidth: 12, font: { size: 10 } } } },
+      scales: {
+        x: { display: false },
+        y: { position: 'left', min: 0, max: 1.05, ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#1e293b' },
+             title: { display: true, text: 'ratio', color: '#64748b', font: { size: 10 } } },
+        y2: { position: 'right', min: 0, ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { drawOnChartArea: false },
+              title: { display: true, text: 'm/s', color: '#94a3b8', font: { size: 10 } } }
+      }
+    }
+  });
+}
+
+function updateSpeedChart() {
+  const datasets = [];
+  slots.forEach((s, i) => {
+    if (!s) return;
+    // For active slot, color each segment by speed
+    if (i === activeSlot) {
+      const vmax = parseFloat(document.getElementById('v_max').value);
+      const vmin = parseFloat(document.getElementById('v_min').value);
+      // Ratio trace (left axis)
+      datasets.push({
+        label: `${i+1}: ${s.name} (ratio)`,
+        data: s.data.map(wp => wp[3]),
+        segment: { borderColor: ctx => speedColor(s.data[ctx.p0DataIndex]?.[3] ?? 0) },
+        borderWidth: 2, pointRadius: 0, tension: 0.2, yAxisID: 'y',
+      });
+      // Actual speed trace (right axis, m/s)
+      datasets.push({
+        label: `${i+1}: actual m/s`,
+        data: s.data.map(wp => vmin + wp[3] * (vmax - vmin)),
+        borderColor: '#ffffff50',
+        borderWidth: 1, borderDash: [4, 2], pointRadius: 0, tension: 0.2, yAxisID: 'y2',
+      });
+    } else {
+      datasets.push({
+        label: `${i+1}: ${s.name}`,
+        data: s.data.map(wp => wp[3]),
+        borderColor: SLOT_COLORS[i] + '80',
+        borderWidth: 1, pointRadius: 0, tension: 0.2,
+      });
+    }
+  });
+  const maxLen = Math.max(...slots.filter(Boolean).map(s => s.data.length), 1);
+  speedChart.data.labels = Array.from({length: maxLen}, (_, i) => i);
+  speedChart.data.datasets = datasets;
+  speedChart.update();
+  updateSpeedStats();
+}
+
+// ── Actions ──────────────────────────────────────────────────────────────
+function getOffset() { return parseFloat(document.getElementById('offset').value); }
+
+function updateSpeedStats() {
+  const el = document.getElementById('speed-stats');
+  const s = slots[activeSlot];
+  if (!s || !s.data.length) { el.innerHTML = ''; return; }
+  const vmax = parseFloat(document.getElementById('v_max').value);
+  const vmin = parseFloat(document.getElementById('v_min').value);
+  const ratios = s.data.map(wp => wp[3]);
+  const maxRatio = Math.max(...ratios);
+  const minRatio = Math.min(...ratios);
+  const avgRatio = ratios.reduce((a,b) => a+b, 0) / ratios.length;
+  const toSpeed = (r) => (vmin + r * (vmax - vmin)).toFixed(1);
+  const minSpeed = parseFloat(toSpeed(minRatio));
+  const warn = minSpeed < 1.5 ? ' <span class="text-yellow-400">low mu?</span>' : '';
+  el.innerHTML = `
+    <div>Max: <span class="text-green-400">${toSpeed(maxRatio)} m/s</span> (ratio ${maxRatio.toFixed(2)})</div>
+    <div>Min: <span class="text-red-400">${toSpeed(minRatio)} m/s</span>${warn}</div>
+    <div>Avg: <span class="text-blue-400">${toSpeed(avgRatio)} m/s</span></div>
+  `;
+}
+
+// ── Inflation overlay ────────────────────────────────────────────────────
+let showInflation = true;
+async function toggleInflation() {
+  showInflation = document.getElementById('show-inflation').checked;
+  if (showInflation && !inflationData) await refreshInflation();
+  drawMap();
+}
+async function refreshInflation() {
+  if (!mapInfo) { toast('Select a map first', 'warn'); return; }
+  const width = parseFloat(document.getElementById('infl_width').value);
+  toast('Loading inflation...');
+  inflationData = await api('/api/inflation', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({map_yaml: mapInfo.yaml, car_width: width}) });
+  if (inflationData.error) { toast(inflationData.error, 'error'); inflationData = null; return; }
+  showInflation = true;
+  document.getElementById('show-inflation').checked = true;
+  drawMap();
+  toast(`Inflation: ${inflationData.length} pts (width=${width}m)`);
+}
+function paramChanged(el) { document.getElementById(el.id+'_val').textContent = parseFloat(el.value).toFixed(2); }
+
+async function generateOffset(offsetM) {
+  const base = slots[activeSlot];
+  if (!base) { toast('Load a raceline first', 'warn'); return; }
+  const carHW = parseFloat(document.getElementById('car_hw').value);
+  const wallClear = parseFloat(document.getElementById('wall_clear').value);
+  const totalMargin = carHW + wallClear;
+  const result = await api('/api/offset', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({base: base.data, offset: offsetM,
+      map_yaml: mapInfo ? mapInfo.yaml : null, safety_margin: totalMargin}) });
+  if (result.error) { toast(result.error, 'error'); return; }
+  const target = offsetM > 0 ? 1 : 2;
+  const dir = offsetM > 0 ? 'left' : 'right';
+  slots[target] = { name: `${base.name}_${dir}`, data: result, csvPath: null };
+  activeSlot = target;
+  renderSlotBar(); drawMap(); updateSpeedChart();
+  computeLapTime(target);
+  toast(`Offset ${dir} → Slot ${target+1}`);
+}
+
+async function reverseActive() {
+  const s = slots[activeSlot];
+  if (!s) { toast('No raceline in active slot', 'warn'); return; }
+  pushUndo(activeSlot);
+  const result = await api('/api/reverse', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({waypoints: s.data}) });
+  if (result.error) { toast(result.error, 'error'); return; }
+  s.data = result;
+  drawMap(); updateSpeedChart();
+  computeLapTime(activeSlot);
+  toast('Direction reversed');
+}
+
+async function resampleActive() {
+  const s = slots[activeSlot];
+  if (!s) { toast('No raceline in active slot', 'warn'); return; }
+  pushUndo(activeSlot);
+  const npts = parseInt(document.getElementById('rs_npts').value);
+  const bias = parseFloat(document.getElementById('rs_turnbias').value);
+  const result = await api('/api/resample', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({waypoints: s.data, num_points: npts, turn_bias: bias}) });
+  if (result.error) { toast(result.error, 'error'); return; }
+  s.data = result;
+  drawMap(); updateSpeedChart();
+  computeLapTime(activeSlot);
+  toast(`Resampled: ${npts} pts (turn bias ${bias}x)`);
+}
+
+async function reprofile() {
+  const s = slots[activeSlot];
+  if (!s) { toast('No raceline in active slot', 'warn'); return; }
+  pushUndo(activeSlot);
+  const params = {
+    v_max: parseFloat(document.getElementById('v_max').value),
+    v_min: parseFloat(document.getElementById('v_min').value),
+    a_max: parseFloat(document.getElementById('a_max').value),
+    a_brake: parseFloat(document.getElementById('a_brake').value),
+    mu: parseFloat(document.getElementById('mu').value),
+  };
+  const result = await api('/api/profile', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({waypoints: s.data, params}) });
+  if (result.error) { toast(result.error, 'error'); return; }
+  s.data = result;
+  drawMap(); updateSpeedChart();
+  // Use same v_min/v_max as profiler for accurate estimate
+  const lt = await api('/api/estimate-laptime', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({waypoints: result, v_min: params.v_min, v_max: params.v_max}) });
+  if (lt.lap_time) document.getElementById('laptime-display').textContent = `Est. lap: ${lt.lap_time}s`;
+  toast('Speed profile updated');
+}
+
+async function extractCenterline() {
+  if (!mapInfo) { toast('Select a map first', 'warn'); return; }
+  const result = await api('/api/extract-centerline', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({map_yaml: mapInfo.yaml, num_points: 150, margin: 0.20}) });
+  if (result.error) { toast(result.error, 'error'); return; }
+  slots[activeSlot] = { name: `${mapInfo.name}_center`, data: result, csvPath: null };
+  renderSlotBar(); drawMap(); updateSpeedChart();
+  toast('Centerline extracted');
+}
+
+// ── Optimize Modal ───────────────────────────────────────────────────────
+function openOptimizeModal() {
+  if (!slots[activeSlot]) { toast('Load a raceline first', 'warn'); return; }
+  if (!mapInfo) { toast('Select a map first', 'warn'); return; }
+  document.getElementById('optimize-modal').classList.add('open');
+}
+function closeOptimizeModal() { document.getElementById('optimize-modal').classList.remove('open'); }
+
+async function runOptimize() {
+  const s = slots[activeSlot];
+  pushUndo(activeSlot);
+  document.getElementById('opt-status').textContent = 'Optimizing...';
+  const result = await api('/api/optimize', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      waypoints: s.data, map_yaml: mapInfo.yaml,
+      margin: parseFloat(document.getElementById('opt_margin').value),
+      car_width: parseFloat(document.getElementById('opt_carwidth').value),
+      num_points: parseInt(document.getElementById('opt_npts').value),
+      mu: parseFloat(document.getElementById('opt_mu').value),
+      v_max: parseFloat(document.getElementById('opt_vmax').value),
+      v_min: parseFloat(document.getElementById('v_min').value),
+      a_max: parseFloat(document.getElementById('opt_amax').value),
+      a_brake: parseFloat(document.getElementById('opt_abrake').value),
+      turn_bias: parseFloat(document.getElementById('opt_turnbias').value),
+    })
+  });
+  if (result.error) { document.getElementById('opt-status').textContent = result.error; return; }
+  s.data = result.waypoints;
+  s.name = s.name + '_opt';
+  if (result.inflation) inflationData = result.inflation;
+  closeOptimizeModal();
+  renderSlotBar(); drawMap(); updateSpeedChart();
+  computeLapTime(activeSlot);
+  toast('Optimization complete');
+}
+
+// ── Save ─────────────────────────────────────────────────────────────────
+async function savePP(asNew) {
+  const s = slots[activeSlot];
+  if (!s) { toast('No raceline in active slot', 'warn'); return; }
+  let path;
+  if (asNew) {
+    let name = document.getElementById('pp-name').value.trim();
+    if (!name) { toast('Enter a filename for Save As New', 'warn'); return; }
+    if (!name.endsWith('.csv')) name += '.csv';
+    path = 'pure_pursuit/race/' + name;
+  } else {
+    if (!s.csvPath || !s.csvPath.startsWith('pure_pursuit/')) {
+      toast('Active slot is not a pure pursuit file — use Save As New', 'warn'); return;
+    }
+    path = s.csvPath;
+  }
+  const result = await api('/api/csv', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({path, data: s.data}) });
+  if (result.error) { toast('Save failed: ' + result.error, 'error'); return; }
+  s.csvPath = path; s.name = path.split('/').pop().replace('.csv','');
+  renderSlotBar(); toast(`Saved → ${path}`); loadCsvList();
+}
+
+async function saveMppi(asNew) {
+  const s = slots[activeSlot];
+  if (!s) { toast('No raceline in active slot', 'warn'); return; }
+  let name;
+  if (asNew) {
+    name = document.getElementById('mppi-name').value.trim();
+    if (!name) { toast('Enter a filename for Save As New', 'warn'); return; }
+  } else {
+    if (!s.csvPath || !s.csvPath.startsWith('mppi/')) {
+      toast('Active slot is not an MPPI file — use Save As New', 'warn'); return;
+    }
+    name = s.csvPath.split('/').pop();
+  }
+  if (!name.endsWith('.csv')) name += '.csv';
+  const v_max = parseFloat(document.getElementById('v_max').value);
+  const v_min = parseFloat(document.getElementById('v_min').value);
+  const result = await api('/api/export-mppi', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({waypoints: s.data, v_min, v_max, name}) });
+  if (result.error) { toast('Save failed: ' + result.error, 'error'); return; }
+  s.csvPath = 'mppi/sim/' + name; s.name = name.replace('.csv','');
+  renderSlotBar(); toast(`Saved → ${result.path} (${result.rows} pts, vx ${result.vx_min.toFixed(1)}–${result.vx_max.toFixed(1)} m/s)`); loadCsvList();
+}
+
+// ── Util ─────────────────────────────────────────────────────────────────
+async function api(url, opts) { try { const r = await fetch(url, opts); return await r.json(); } catch(e) { return {error: e.message}; } }
+function toast(msg, type='info') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.borderColor = type==='error' ? '#dc2626' : type==='warn' ? '#f59e0b' : '#3b82f6';
+  el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+init();
+</script>
+</body>
+</html>

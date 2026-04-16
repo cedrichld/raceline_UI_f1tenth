@@ -1,0 +1,6 @@
+flask
+numpy
+scipy
+pyyaml
+matplotlib
+pillow
