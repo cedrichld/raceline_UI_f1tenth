@@ -4,6 +4,8 @@ Web-based raceline editor for F1TENTH. Loads waypoint CSVs from a Pure Pursuit
 folder and an MPPI folder, lets you edit/optimize/profile racelines, and saves
 back in either format (4-col Pure Pursuit or 9-col Levine MPPI).
 
+![Raceline Studio](raceline_studio.png)
+
 ## Setup
 
 ```bash
