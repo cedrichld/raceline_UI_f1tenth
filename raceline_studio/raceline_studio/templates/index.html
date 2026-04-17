@@ -33,6 +33,13 @@
   /* Speed gradient helpers */
   .speed-legend { display: flex; height: 10px; border-radius: 3px; overflow: hidden; }
   .speed-legend div { flex: 1; }
+  /* Collapsible right-column sections */
+  details.panel > summary { list-style: none; cursor: pointer; user-select: none;
+    display: flex; justify-content: space-between; align-items: center; }
+  details.panel > summary::-webkit-details-marker { display: none; }
+  details.panel > summary:hover { color: #cbd5e1; }
+  details.panel > summary .chev { font-size: 9px; color: #64748b; transition: transform 0.15s; }
+  details.panel[open] > summary .chev { transform: rotate(180deg); }
 </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden">
@@ -118,9 +125,10 @@
 
   <!-- Right: Parameters -->
   <div class="w-56 shrink-0 bg-slate-900 border-l border-slate-700 flex flex-col overflow-y-auto">
-    <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-700">
-      Speed Profile
-    </div>
+    <details open class="panel">
+    <summary class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-700">
+      <span>Speed Profile</span><span class="chev">▼</span>
+    </summary>
     <div class="p-3 space-y-3">
       <div class="space-y-1">
         <label class="flex justify-between text-xs"><span>v_max (m/s)</span><span id="v_max_val" class="text-blue-400">7.60</span></label>
@@ -148,10 +156,12 @@
       <div id="speed-stats" class="text-xs text-slate-500 text-center space-y-0.5"></div>
       <!-- <p class="text-xs text-slate-600 text-center">yaml: slow_speed=v_min, fast_speed=v_max</p> -->
     </div>
+    </details>
 
-    <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-t border-slate-700">
-      Resample
-    </div>
+    <details open class="panel">
+    <summary class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-t border-slate-700">
+      <span>Resample</span><span class="chev">▼</span>
+    </summary>
     <div class="p-3 space-y-2">
       <div class="space-y-1">
         <label class="flex justify-between text-xs"><span>Num points</span><span id="rs_npts_val" class="text-blue-400">45</span></label>
@@ -166,10 +176,12 @@
       <button class="btn btn-secondary w-full" onclick="resampleActive()">Resample Points</button>
       <p class="text-xs text-slate-500">Denser in turns, sparser on straights</p>
     </div>
+    </details>
 
-    <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-t border-slate-700">
-      Offset
-    </div>
+    <details class="panel">
+    <summary class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-t border-slate-700">
+      <span>Offset</span><span class="chev">▼</span>
+    </summary>
     <div class="p-3 space-y-2">
       <div class="space-y-1">
         <label class="flex justify-between text-xs"><span>Offset (m)</span><span id="offset_val" class="text-blue-400">0.40</span></label>
@@ -192,10 +204,12 @@
       </div>
       <p class="text-xs text-slate-500">Total margin = car width + wall clearance</p>
     </div>
+    </details>
 
-    <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-t border-slate-700">
-      Save
-    </div>
+    <details open class="panel">
+    <summary class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide border-b border-t border-slate-700">
+      <span>Save</span><span class="chev">▼</span>
+    </summary>
     <div class="p-3 space-y-3">
       <div class="space-y-2">
         <p class="text-xs text-slate-400 font-semibold">Pure Pursuit (4-col)</p>
@@ -204,6 +218,7 @@
           <button class="btn btn-primary flex-1" onclick="savePP(false)">Overwrite</button>
           <button class="btn btn-secondary flex-1" onclick="savePP(true)">Save As New</button>
         </div>
+        <button class="btn btn-secondary w-full" onclick="pushLive('pp')">Push Live → PP</button>
       </div>
       <div class="border-t border-slate-700 pt-3 space-y-2">
         <p class="text-xs text-slate-400 font-semibold">MPPI (Levine 9-col)</p>
@@ -212,8 +227,10 @@
           <button class="btn btn-primary flex-1" onclick="saveMppi(false)">Overwrite</button>
           <button class="btn btn-secondary flex-1" onclick="saveMppi(true)">Save As New</button>
         </div>
+        <button class="btn btn-secondary w-full" onclick="pushLive('mppi')">Push Live → MPPI</button>
       </div>
     </div>
+    </details>
   </div>
 </div>
 
@@ -944,6 +961,20 @@ async function saveMppi(asNew) {
   if (result.error) { toast('Save failed: ' + result.error, 'error'); return; }
   s.csvPath = 'mppi/sim/' + name; s.name = name.replace('.csv','');
   renderSlotBar(); toast(`Saved → ${result.path} (${result.rows} pts, vx ${result.vx_min.toFixed(1)}–${result.vx_max.toFixed(1)} m/s)`); loadCsvList();
+}
+
+async function pushLive(target) {
+  const s = slots[activeSlot];
+  if (!s) { toast('No raceline in active slot', 'warn'); return; }
+  const body = { target, waypoints: s.data };
+  if (target === 'mppi') {
+    body.v_min = parseFloat(document.getElementById('v_min').value);
+    body.v_max = parseFloat(document.getElementById('v_max').value);
+  }
+  const res = await api('/api/push', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body) });
+  if (res.error) { toast(`Push ${target} failed: ${res.error}`, 'error'); return; }
+  toast(`Push ${target}: ${res.message || 'ok'} (${res.rows} pts)`, res.success ? 'info' : 'warn');
 }
 
 // ── Util ─────────────────────────────────────────────────────────────────

@@ -12,10 +12,14 @@ Usage:
     python3 app.py
     → opens http://localhost:5050
 """
-import os, sys, json, glob, yaml, hashlib, datetime
+import os, sys, json, glob, yaml, hashlib, datetime, threading, time, webbrowser
 import numpy as np
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, send_file
+
+import rclpy
+from rclpy.node import Node
+from raceline_msgs.srv import UpdateRaceline
 
 # ═══════════════════════════════════════════════════════════════════════════
 # WORKSPACE PATHS — edit these to match your setup
@@ -44,6 +48,16 @@ WP_ROOTS = {
 }
 MPPI_WP_DIR = WP_ROOTS["mppi"] / MPPI_EXPORT_SUBDIR
 MAPS_DIRS = [Path(os.path.expanduser(d)) for d in MAPS_DIRS]
+
+
+# ── ROS2 node with service clients ────────────────────────────────────────
+class StudioNode(Node):
+    def __init__(self):
+        super().__init__('raceline_studio')
+        self.pp_client   = self.create_client(UpdateRaceline, '/pure_pursuit/update_raceline')
+        self.mppi_client = self.create_client(UpdateRaceline, '/mppi/update_raceline')
+
+STUDIO_NODE: "StudioNode | None" = None
 
 
 def _resolve(rel_path):
@@ -518,10 +532,66 @@ def api_export_mppi():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 400
 
 
+@app.route("/api/push", methods=["POST"])
+def api_push():
+    """Send the active raceline directly to a running node via ROS2 service.
+
+    Body: {target: 'pp'|'mppi', waypoints: [[x,y,yaw,ratio], ...], v_min, v_max}
+    PP target sends 4-col; MPPI target encodes vx using v_min/v_max and sends 9-col.
+    """
+    if STUDIO_NODE is None:
+        return jsonify({"error": "ROS node not initialized"}), 500
+    body = request.json
+    target = body.get("target", "")
+    wps = np.array(body["waypoints"])
+    if target == "mppi":
+        v_min = float(body.get("v_min", 1.5))
+        v_max = float(body.get("v_max", 7.6))
+        rows = _to_mppi_rows(wps, v_min, v_max)
+        client, fmt = STUDIO_NODE.mppi_client, "mppi"
+    elif target == "pp":
+        rows = wps
+        client, fmt = STUDIO_NODE.pp_client, "pure_pursuit"
+    else:
+        return jsonify({"error": f"Unknown target {target!r}"}), 400
+
+    if not client.wait_for_service(timeout_sec=1.0):
+        return jsonify({"error": f"{target} service not available"}), 503
+
+    req = UpdateRaceline.Request()
+    r, c = rows.shape
+    req.data   = rows.flatten().astype(float).tolist()
+    req.rows   = int(r)
+    req.cols   = int(c)
+    req.format = fmt
+
+    future = client.call_async(req)
+    start = time.time()
+    while not future.done() and time.time() - start < 3.0:
+        time.sleep(0.02)
+    if not future.done():
+        return jsonify({"error": "timeout"}), 504
+    resp = future.result()
+    return jsonify({"success": resp.success, "message": resp.message,
+                    "rows": int(r), "format": fmt})
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
+def main():
+    global STUDIO_NODE
+    rclpy.init()
+    STUDIO_NODE = StudioNode()
+    threading.Thread(target=rclpy.spin, args=(STUDIO_NODE,), daemon=True).start()
+    try:
+        port = 5050
+        url = f"http://localhost:{port}"
+        print(f"\n  Raceline Studio → {url}\n")
+        threading.Timer(0.1, lambda: webbrowser.open(url)).start()
+        app.run(host="0.0.0.0", port=port, use_reloader=False)
+    finally:
+        STUDIO_NODE.destroy_node()
+        rclpy.shutdown()
+
+
 if __name__ == "__main__":
-    import webbrowser, threading
-    port = 5050
-    print(f"\n  Raceline Studio → http://localhost:{port}\n")
-    threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
-    app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)
+    main()
