@@ -6,7 +6,7 @@ setup(
     name=package_name,
     version='0.0.1',
     packages=[package_name],
-    package_data={package_name: ['templates/*.html']},
+    package_data={package_name: ['templates/*.html', 'static/vendor/*']},
     include_package_data=True,
     data_files=[
         ('share/ament_index/resource_index/packages',
