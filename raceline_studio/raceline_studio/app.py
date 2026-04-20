@@ -27,11 +27,10 @@ from raceline_msgs.srv import UpdateRaceline
 PURE_PURSUIT_WAYPOINTS = "~/ros2_ws/roboracer_ws/src/lab5/lab-5-slam-and-pure-pursuit-team5/pure_pursuit/waypoints"
 MPPI_WAYPOINTS         = "~/ros2_ws/roboracer_ws/src/mppi/mppi_bringup/waypoints"
 
-MAPS_DIRS = [
-    "~/ros2_ws/roboracer_ws/src/lab5/lab-5-slam-and-pure-pursuit-team5/maps/race",
-    "~/ros2_ws/roboracer_ws/src/lab5/lab-5-slam-and-pure-pursuit-team5/maps/old",
-    "~/ros2_ws/roboracer_ws/src/f1tenth_gym_ros/maps",
-]
+MAPS_DIRS = ["~/ros2_ws/roboracer_ws/src/f1tenth_gym_ros/maps"]
+
+# Map stem (no extension) that gets floated to the top of the dropdown
+DEFAULT_MAP = "racetrack_levine_cleaned"
 
 # MPPI export endpoint writes here (under the MPPI waypoints root)
 MPPI_EXPORT_SUBDIR = "sim"
@@ -92,6 +91,7 @@ def _find_maps():
             maps.append({"name": f"{d.name}/{y.stem}", "yaml": str(y), "image": str(img),
                          "resolution": meta.get("resolution", 0.05),
                          "origin": meta.get("origin", [0, 0, 0])})
+    maps.sort(key=lambda m: (not m["name"].endswith("/" + DEFAULT_MAP), m["name"]))
     return maps
 
 def _find_csvs():
