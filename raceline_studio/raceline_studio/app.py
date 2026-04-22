@@ -33,7 +33,7 @@ MAPS_DIRS = ["~/ros2_ws/roboracer_ws/src/f1tenth_gym_ros/maps"]
 DEFAULT_MAP = "racetrack_levine_cleaned"
 
 # MPPI export endpoint writes here (under the MPPI waypoints root)
-MPPI_EXPORT_SUBDIR = "sim"
+MPPI_EXPORT_SUBDIR = "lev_testing"
 # ═══════════════════════════════════════════════════════════════════════════
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

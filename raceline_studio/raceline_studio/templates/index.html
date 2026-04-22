@@ -310,6 +310,10 @@ let mapInfo = null, mapImg = null;
 let pan = {x:0, y:0}, zoom = 1;
 let speedChart = null;
 let editMode = true, dragIdx = -1;
+// Multi-select state
+let selectedIndices = new Set();
+let boxSelect = null;       // {x0,y0,x1,y1} in canvas coords while actively box-selecting
+let groupDrag = null;       // {mouseWx0, mouseWy0, snapshots: Map<idx,[x,y]>} while dragging a selection
 let inflationData = null;
 
 // Undo/redo: stores deep copies of slot data per active slot
@@ -341,6 +345,20 @@ function redo() {
 document.addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
   if (e.ctrlKey && e.key === 'y') { e.preventDefault(); redo(); }
+  if (e.key === 'Escape' && selectedIndices.size) {
+    selectedIndices.clear(); drawMap();
+  }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIndices.size && slots[activeSlot]) {
+    const s = slots[activeSlot];
+    if (s.data.length - selectedIndices.size < 3) { toast('Need at least 3 waypoints', 'warn'); return; }
+    pushUndo(activeSlot);
+    // Delete in reverse index order to keep positions stable
+    const sorted = [...selectedIndices].sort((a, b) => b - a);
+    sorted.forEach(i => s.data.splice(i, 1));
+    selectedIndices.clear();
+    drawMap(); updateSpeedChart(); computeLapTime(activeSlot);
+    toast(`Deleted ${sorted.length} waypoints`);
+  }
 });
 
 // Speed → color
@@ -447,6 +465,7 @@ function renderSlotBar() {
     b.innerHTML = `<b>${i+1}</b> ${s ? s.name : SLOT_NAMES[i]}${lapStr}`;
     b.onclick = () => {
       activeSlot = i;
+      selectedIndices.clear();
       renderSlotBar(); updateSpeedChart(); drawMap();
       const cur = slots[i];
       document.getElementById('laptime-display').textContent =
@@ -478,6 +497,7 @@ async function loadCsvToSlot(csvPath, idx) {
   if (data.error) { toast(data.error, 'error'); return; }
   slots[idx] = { name: csvPath.split('/').pop().replace('.csv',''), data, csvPath };
   activeSlot = idx;
+  selectedIndices.clear();
   renderSlotBar(); drawMap(); updateSpeedChart();
   computeLapTime(idx);
   toast(`Loaded → Slot ${idx+1}`);
@@ -548,13 +568,28 @@ function drawMap() {
     if (editMode && isActive) {
       s.data.forEach((wp, j) => {
         const [cx, cy] = w2c(wp[0], wp[1]);
+        const sel = selectedIndices.has(j);
+        const rad = sel ? 6 : 4;
         ctx.fillStyle = speedColor(wp[3]);
-        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI*2); ctx.fill();
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI*2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = sel ? '#000' : '#fff';
+        ctx.lineWidth = 0.5;
+        ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI*2); ctx.stroke();
       });
     }
   });
+
+  // Box-select rectangle (neutral gray, system-style)
+  if (boxSelect) {
+    const {x0, y0, x1, y1} = boxSelect;
+    ctx.strokeStyle = 'rgba(156, 163, 175, 0.7)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(Math.min(x0,x1), Math.min(y0,y1), Math.abs(x1-x0), Math.abs(y1-y0));
+    ctx.fillStyle = 'rgba(156, 163, 175, 0.1)';
+    ctx.fillRect(Math.min(x0,x1), Math.min(y0,y1), Math.abs(x1-x0), Math.abs(y1-y0));
+    ctx.setLineDash([]);
+  }
 
   const info = document.getElementById('map-info');
   const a = slots[activeSlot];
@@ -575,6 +610,29 @@ function initMapControls() {
   });
 
   cv.addEventListener('mousedown', e => {
+    // Ctrl + left click → multi-select (toggle point or start box-select)
+    if (editMode && e.button === 0 && e.ctrlKey && slots[activeSlot]) {
+      const r = cv.getBoundingClientRect();
+      const mx = e.clientX-r.left, my = e.clientY-r.top;
+      const s = slots[activeSlot];
+      let minD = Infinity, minI = -1;
+      s.data.forEach((wp, i) => {
+        const [cx, cy] = w2c(wp[0], wp[1]);
+        const d = Math.hypot(cx-mx, cy-my);
+        if (d < minD) { minD = d; minI = i; }
+      });
+      if (minD < 20) {
+        // Toggle individual point in selection
+        if (selectedIndices.has(minI)) selectedIndices.delete(minI);
+        else selectedIndices.add(minI);
+        drawMap();
+        return;
+      }
+      // Start box-select on empty space
+      boxSelect = {x0: mx, y0: my, x1: mx, y1: my};
+      cv.style.cursor = 'crosshair';
+      return;
+    }
     if (editMode && e.button === 0 && slots[activeSlot]) {
       // Find nearest waypoint
       const r = cv.getBoundingClientRect();
@@ -586,7 +644,24 @@ function initMapControls() {
         const d = Math.hypot(cx-mx, cy-my);
         if (d < minD) { minD = d; minI = i; }
       });
-      if (minD < 20) { pushUndo(activeSlot); dragIdx = minI; return; }
+      if (minD < 20) {
+        pushUndo(activeSlot);
+        // If the clicked point is in the current selection, drag the whole group
+        if (selectedIndices.has(minI) && selectedIndices.size > 1) {
+          const [mouseWx, mouseWy] = c2w(mx, my);
+          const snapshots = new Map();
+          selectedIndices.forEach(i => snapshots.set(i, [s.data[i][0], s.data[i][1]]));
+          groupDrag = {mouseWx0: mouseWx, mouseWy0: mouseWy, snapshots};
+        } else {
+          // Single drag — clear selection so visuals aren't confusing
+          selectedIndices.clear();
+          dragIdx = minI;
+        }
+        return;
+      }
+      // Click on empty space (no modifier) clears selection
+      selectedIndices.clear();
+      drawMap();
     }
     if (editMode && e.button === 0 && e.shiftKey && slots[activeSlot]) {
       // Insert new waypoint
@@ -629,9 +704,28 @@ function initMapControls() {
   });
 
   cv.addEventListener('mousemove', e => {
+    const r = cv.getBoundingClientRect();
+    const mx = e.clientX-r.left, my = e.clientY-r.top;
+    // Box-select drag
+    if (boxSelect) {
+      boxSelect.x1 = mx; boxSelect.y1 = my;
+      drawMap();
+      return;
+    }
+    // Group drag — translate all selected points by mouse delta (in world coords)
+    if (groupDrag && editMode && slots[activeSlot]) {
+      const [wx, wy] = c2w(mx, my);
+      const dx = wx - groupDrag.mouseWx0;
+      const dy = wy - groupDrag.mouseWy0;
+      groupDrag.snapshots.forEach(([x0, y0], i) => {
+        slots[activeSlot].data[i][0] = x0 + dx;
+        slots[activeSlot].data[i][1] = y0 + dy;
+      });
+      drawMap();
+      return;
+    }
     if (dragIdx >= 0 && editMode && slots[activeSlot]) {
-      const r = cv.getBoundingClientRect();
-      const [wx, wy] = c2w(e.clientX-r.left, e.clientY-r.top);
+      const [wx, wy] = c2w(mx, my);
       slots[activeSlot].data[dragIdx][0] = wx;
       slots[activeSlot].data[dragIdx][1] = wy;
       drawMap();
@@ -649,15 +743,33 @@ function initMapControls() {
   });
 
   cv.addEventListener('mouseup', () => {
-    const wasDragEdit = dragIdx >= 0;
-    dragging = false; dragIdx = -1;
+    // Commit box-select → add all waypoints inside the box to selection
+    if (boxSelect && slots[activeSlot]) {
+      const xLo = Math.min(boxSelect.x0, boxSelect.x1), xHi = Math.max(boxSelect.x0, boxSelect.x1);
+      const yLo = Math.min(boxSelect.y0, boxSelect.y1), yHi = Math.max(boxSelect.y0, boxSelect.y1);
+      // Tiny box = click with no drag = clear selection
+      if ((xHi - xLo) < 3 && (yHi - yLo) < 3) {
+        selectedIndices.clear();
+      } else {
+        slots[activeSlot].data.forEach((wp, i) => {
+          const [cx, cy] = w2c(wp[0], wp[1]);
+          if (cx >= xLo && cx <= xHi && cy >= yLo && cy <= yHi) selectedIndices.add(i);
+        });
+      }
+      boxSelect = null;
+      drawMap();
+    }
+    const wasDragEdit = dragIdx >= 0 || groupDrag !== null;
+    dragging = false; dragIdx = -1; groupDrag = null;
     cv.style.cursor = editMode ? 'default' : 'crosshair';
     if (wasDragEdit) {
       updateSpeedChart();
       computeLapTime(activeSlot);  // recalc lap time after edit
     }
   });
-  cv.addEventListener('mouseleave', () => { dragging = false; dragIdx = -1; hideTooltip(); });
+  cv.addEventListener('mouseleave', () => {
+    dragging = false; dragIdx = -1; groupDrag = null; boxSelect = null; hideTooltip();
+  });
 }
 
 function hideTooltip() { document.getElementById('wp-tooltip').style.display = 'none'; }
