@@ -24,10 +24,10 @@ from raceline_msgs.srv import UpdateRaceline
 # ═══════════════════════════════════════════════════════════════════════════
 # WORKSPACE PATHS — edit these to match your setup
 # ═══════════════════════════════════════════════════════════════════════════
-PURE_PURSUIT_WAYPOINTS = "~/ros2_ws/roboracer_ws/src/lab5/lab-5-slam-and-pure-pursuit-team5/pure_pursuit/waypoints"
-MPPI_WAYPOINTS         = "~/ros2_ws/roboracer_ws/src/mppi/mppi_bringup/waypoints"
+PURE_PURSUIT_WAYPOINTS = "~/roboracer_ws/src/labs/lab5/pure_pursuit/waypoints"
+MPPI_WAYPOINTS         = "~/roboracer_ws/src/cbf_mppi_f1tenth/mppi_bringup/waypoints"
 
-MAPS_DIRS = ["~/ros2_ws/roboracer_ws/src/f1tenth_gym_ros/maps"]
+MAPS_DIRS = ["~/roboracer_ws/src/f1tenth_gym_ros/maps"]
 
 # Map stem (no extension) that gets floated to the top of the dropdown
 DEFAULT_MAP = "racetrack_levine_cleaned"
